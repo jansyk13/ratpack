@@ -59,6 +59,7 @@ import javax.net.ssl.SSLEngine;
 import java.net.InetSocketAddress;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import static ratpack.util.Exceptions.uncheck;
 
@@ -120,8 +121,15 @@ public class DefaultRatpackServer implements RatpackServer {
 
     serverConfig = definitionBuild.getServerConfig();
     execController = new DefaultExecController(serverConfig.getThreads());
-    ChannelHandler channelHandler = ThreadBinding.bindFor(true, execController, () -> buildHandler(definitionBuild));
-    channel = buildChannel(serverConfig, channelHandler);
+    ChannelInboundHandlerAdapter channelInboundHandlerAdapter = ThreadBinding.bindFor(true, execController, () -> buildHandler(definitionBuild));
+    Supplier<ChannelInboundHandlerAdapter> channelInboundHandlerAdapterSupplier = () -> {
+      try {
+        return ThreadBinding.bindFor(true, execController, () -> buildHandler(buildUserDefinition()));
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    };
+    channel = buildChannel(serverConfig, channelInboundHandlerAdapter, channelInboundHandlerAdapterSupplier);
 
     boundAddress = (InetSocketAddress) channel.localAddress();
 
@@ -198,7 +206,7 @@ public class DefaultRatpackServer implements RatpackServer {
     });
   }
 
-  private ChannelHandler buildHandler(DefinitionBuild definitionBuild) throws Exception {
+  private ChannelInboundHandlerAdapter buildHandler(DefinitionBuild definitionBuild) throws Exception {
     if (definitionBuild.getServerConfig().isDevelopment()) {
       return new ReloadHandler(definitionBuild);
     } else {
@@ -206,7 +214,7 @@ public class DefaultRatpackServer implements RatpackServer {
     }
   }
 
-  protected Channel buildChannel(final ServerConfig serverConfig, final ChannelHandler handlerAdapter) throws InterruptedException {
+  protected Channel buildChannel(final ServerConfig serverConfig, final ChannelInboundHandlerAdapter channelInboundHandlerAdapter, final Supplier<ChannelInboundHandlerAdapter> channelInboundHandlerAdapterSupplier) throws InterruptedException {
 
     SslContext sslContext = serverConfig.getNettySslContext();
     this.useSsl = sslContext != null;
@@ -260,7 +268,7 @@ public class DefaultRatpackServer implements RatpackServer {
           pipeline.addLast("encoder", new HttpResponseEncoder());
           pipeline.addLast("deflater", new IgnorableHttpContentCompressor());
           pipeline.addLast("chunkedWriter", new ChunkedWriteHandler());
-          pipeline.addLast("adapter", handlerAdapter);
+          pipeline.addLast("adapter", new SighupHandler(channelInboundHandlerAdapter, channelInboundHandlerAdapterSupplier));
 
           ch.config().setAutoRead(false);
         }
